@@ -34,7 +34,7 @@ def generate_sql_and_response(nlp_text):
 
     # Call OpenAI API to generate SQL query from combined prompt
     response = openai.Completion.create(
-        model='text-davinci-003',
+        model='code-davinci-002',
         prompt=combined_prompt,
         temperature=0.1,
         max_tokens=150,
@@ -52,6 +52,7 @@ def generate_sql_and_response(nlp_text):
         query = 'SELECT'+query
 
     # Execute SQL query on temporary database and save output
+    # with temp_db.connect() as conn:
     with temp_db.connect() as conn:
         result = conn.execute(text(query))
         output = result.all()
