@@ -13,5 +13,5 @@ coanalyst.ai is an application to analyze data in spreadsheets with the ability 
 
 # Quickstart
 
-<ul>Get an <a href='https://platform.openai.com/account/api-keys'>OpenAI API Key</a></ul>
-<ul>Run the app</ul>
+<ul>Get an <a href='https://platform.openai.com/account/api-keys'>OpenAI API Key</a> and put it in the config file</ul>
+<ul>Run the app.py file</ul>
