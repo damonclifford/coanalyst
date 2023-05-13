@@ -13,7 +13,7 @@ df['TotalSales'] = df['Quantity'] * df['UnitPrice']
 def create_table_definition(df):
     prompt = '''### sqlite SQL table, with its properties:
     #
-    # Sales({})
+    # Data({})
     #
     '''.format(','.join(str(col) for col in df.columns))
 
@@ -27,7 +27,7 @@ def combine_prompts(df, query_prompt):
 def generate_sql_and_response(nlp_text):
     # Create temporary in-memory SQLite database and push Pandas dataframe to it
     temp_db = create_engine('sqlite:///:memory:', echo=True)
-    data = df.to_sql(name='Sales', con=temp_db)
+    data = df.to_sql(name='Data', con=temp_db)
 
     # Combine NLP input, dataframe, and SQL query
     combined_prompt = combine_prompts(df, nlp_text)
