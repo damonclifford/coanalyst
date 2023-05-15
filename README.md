@@ -14,6 +14,7 @@ coanalyst.ai is an application to analyze data in spreadsheets with the ability 
 
 <ul>Load your own spreadsheet</ul>
 <ul>Visualizations and charts</ul>
+<ul>Connect to a data warehouse</ul>
 
 # Quickstart
 
