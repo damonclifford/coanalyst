@@ -3,7 +3,7 @@
 <a href="http://www.coanalyst.ai">coanalyst.ai</a> coming soon!
 
 <p>
-coanalyst.ai is an application to analyze data in spreadsheets with the ability to connect to a database in the project plan.
+coanalyst.ai is an application to analyze data using new technologies.
 </p>
 
 # Features
