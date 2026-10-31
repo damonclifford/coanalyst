@@ -1,197 +1,195 @@
-from flask import Flask, request, render_template
+import os
+import re
+
+from flask import Flask, render_template, request
 from sqlalchemy import create_engine, text
 import pandas as pd
+
 import config
-import re
 
 app = Flask(__name__)
 
-# Try to import the new OpenAI client, fallback to old version
+# Modern OpenAI client configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or getattr(config, "OPENAI_API_KEY", "")
+
 try:
     from openai import OpenAI
-    # New API (v1.0+)
-    client = OpenAI(api_key=config.OPENAI_API_KEY)
-    USE_NEW_API = True
-except ImportError:
-    # Old API (pre-v1.0)
-    import openai
-    openai.api_key = config.OPENAI_API_KEY
-    USE_NEW_API = False
 
-df = pd.read_csv('assets/Online_Retail_1000_v2.csv')
+    client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY and OPENAI_API_KEY != "YOUR-OPENAI-API-KEY" else None
+except ImportError:
+    client = None
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_PATH = os.path.join(BASE_DIR, "assets", "Online_Retail_1000_v2.csv")
+
+# Load the dataset from a stable app-relative path
+try:
+    df = pd.read_csv(CSV_PATH)
+except FileNotFoundError:
+    df = pd.read_csv(os.path.join(BASE_DIR, "data", "Online_Retail_1000_v2.csv"))
+
 # Calculate total sales and add as a new column
-df['TotalSales'] = df['Quantity'] * df['UnitPrice']
+if "TotalSales" not in df.columns:
+    df["TotalSales"] = df["Quantity"] * df["UnitPrice"]
+
 
 def create_table_definition(df):
-    prompt = '''### sqlite SQL table, with its properties:
-    #
-    # Sales({})
-    #
-    '''.format(','.join(str(col) for col in df.columns))
-    return prompt
+    columns = ", ".join(str(col) for col in df.columns)
+    return (
+        "You are generating valid SQLite SQL for a sales dataset. "
+        f"Table name: Sales. Columns: {columns}. "
+        "Return ONLY the SQL statement with no markdown fences, no explanation, "
+        "and no extra commentary."
+    )
+
 
 def combine_prompts(df, query_prompt):
     definition = create_table_definition(df)
-    query_init_string = f'### A query to answer: {query_prompt}\nSELECT'
-    return definition + query_init_string
+    return (
+        f"{definition}\n\n"
+        "Use the columns exactly as provided. "
+        "Do not invent columns. "
+        "Do not use unsupported SQLite functions. "
+        "Ignore nulls where appropriate.\n\n"
+        f"Question: {query_prompt}\n\n"
+        "SQL:"
+    )
+
 
 def clean_sql_query(query):
-    """Clean and validate the SQL query"""
-    # Remove leading/trailing whitespace
+    """Clean and normalize a SQL query returned by the model."""
+    if not query:
+        return "SELECT COUNT(*) FROM Sales"
+
+    # Strip markdown fences if the model returns them
     query = query.strip()
+    query = re.sub(r"^```(?:sql)?\s*", "", query, flags=re.IGNORECASE)
+    query = re.sub(r"\s*```$", "", query, flags=re.IGNORECASE)
 
-    # Add SELECT if missing
-    if not query.upper().startswith('SELECT'):
-        query = 'SELECT ' + query
+    # Extract the first SQL statement if the model includes surrounding text
+    match = re.search(r"SELECT\b.*", query, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        query = match.group(0)
 
-    # Remove comments and clean up the query
-    query = re.sub(r'--.*$', '', query, flags=re.MULTILINE)
-    query = re.sub(r'/\*.*?\*/', '', query, flags=re.DOTALL)
+    # Ensure it is a SELECT statement
+    if not re.match(r"^SELECT\b", query, flags=re.IGNORECASE):
+        query = "SELECT " + query.lstrip()
 
-    # Remove extra whitespace
-    query = ' '.join(query.split())
-
-    # Ensure query ends properly (remove trailing semicolons if present)
-    query = query.rstrip(';')
-
+    # Remove trailing semicolons and extra whitespace
+    query = query.rstrip(";")
+    query = " ".join(query.split())
     return query
 
-def call_openai_completion(prompt, max_tokens=150, stop=None):
-    """Call OpenAI API with compatibility for both old and new versions"""
+
+def call_openai_completion(prompt, max_tokens=300, temperature=0.1):
+    """Call the modern OpenAI chat completions API."""
+    if client is None:
+        return "OpenAI API key is not configured. Set OPENAI_API_KEY in your environment or config.py."
+
     try:
-        if USE_NEW_API:
-            # New API (v1.0+)
-            response = client.completions.create(
-                model='gpt-3.5-turbo-instruct',
-                prompt=prompt,
-                temperature=0.1,
-                max_tokens=max_tokens,
-                top_p=1.0,
-                frequency_penalty=0.0,
-                presence_penalty=0.0,
-                stop=stop
-            )
-            return response.choices[0].text.strip()
-        else:
-            # Old API (pre-v1.0) - use available models
-            try:
-                # Try gpt-3.5-turbo-instruct first
-                response = openai.Completion.create(
-                    model='gpt-3.5-turbo-instruct',
-                    prompt=prompt,
-                    temperature=0.1,
-                    max_tokens=max_tokens,
-                    top_p=1.0,
-                    frequency_penalty=0.0,
-                    presence_penalty=0.0,
-                    stop=stop
-                )
-                return response['choices'][0]['text'].strip()
-            except:
-                # Fallback to text-davinci-002 if available
-                try:
-                    response = openai.Completion.create(
-                        model='text-davinci-002',
-                        prompt=prompt,
-                        temperature=0.1,
-                        max_tokens=max_tokens,
-                        top_p=1.0,
-                        frequency_penalty=0.0,
-                        presence_penalty=0.0,
-                        stop=stop
-                    )
-                    return response['choices'][0]['text'].strip()
-                except:
-                    # If all else fails, return a simple response
-                    return "Unable to generate response due to API limitations."
-    except Exception as e:
-        print(f"OpenAI API Error: {str(e)}")
-        return f"Error calling OpenAI API: {str(e)}"
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a careful SQL generation assistant for SQLite. "
+                        "Return only valid SQL without markdown fences or explanations."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        print(f"OpenAI API Error: {exc}")
+        return f"Error calling OpenAI API: {exc}"
+
 
 def generate_sql_and_response(nlp_text):
     try:
-        # Create temporary in-memory SQLite database and push Pandas dataframe to it
-        temp_db = create_engine('sqlite:///:memory:', echo=False)
-        df.to_sql(name='Sales', con=temp_db, if_exists='replace', index=False)
+        temp_db = create_engine("sqlite:///:memory:", echo=False)
+        df.to_sql(name="Sales", con=temp_db, if_exists="replace", index=False)
 
-        # Combine NLP input, dataframe, and SQL query
         combined_prompt = combine_prompts(df, nlp_text)
-
-        # Call OpenAI API to generate SQL query
         query_response = call_openai_completion(
             combined_prompt,
-            max_tokens=150,
-            stop=['#', ';']
+            max_tokens=250,
+            temperature=0.1,
         )
 
-        # Extract and clean SQL query
+        if query_response.startswith("Error calling OpenAI API") or "not configured" in query_response:
+            return "SELECT COUNT(*) FROM Sales", [], query_response
+
         query = clean_sql_query(query_response)
+        print(f"Generated SQL: {query}")
 
-        print(f"Generated SQL: {query}")  # For debugging
-
-        # Execute SQL query on temporary database and save output
         try:
             with temp_db.connect() as conn:
                 result = conn.execute(text(query))
-                output = result.fetchall()
+                rows = result.fetchall()
+                columns = result.keys()
+                output = [dict(zip(columns, row)) for row in rows]
         except Exception as sql_error:
-            print(f"SQL Error: {str(sql_error)}")
-            # Return a simple fallback query
+            print(f"SQL Error: {sql_error}")
             query = "SELECT COUNT(*) FROM Sales"
             with temp_db.connect() as conn:
                 result = conn.execute(text(query))
-                output = result.fetchall()
+                rows = result.fetchall()
+                columns = result.keys()
+                output = [dict(zip(columns, row)) for row in rows]
 
-        # Create a more natural language prompt for the response
-        response_prompt = f"""
-        Question: {nlp_text}
-        SQL Query Result: {output}
+        response_prompt = (
+            "You are a helpful data analyst. Respond in plain English, using the data below.\n\n"
+            f"Question: {nlp_text}\n"
+            f"SQL Query: {query}\n"
+            f"Result: {output}\n\n"
+            "Write a concise and informative answer that explains the result clearly."
+        )
 
-        Please provide a natural language response explaining the results in a helpful way.
-        """
+        response_text = call_openai_completion(response_prompt, max_tokens=250, temperature=0.2)
 
-        # Call OpenAI API to generate natural language response
-        response_text = call_openai_completion(response_prompt, max_tokens=150)
+        if response_text.startswith("Error calling OpenAI API") or "not configured" in response_text:
+            response_text = "I generated a query and retrieved the results, but the response model is unavailable right now."
 
         return query, output, response_text
 
-    except Exception as e:
-        print(f"Error in generate_sql_and_response: {str(e)}")
-        error_query = f"-- Error generating query for: {nlp_text}"
-        error_output = []
-        error_response = f"Sorry, I encountered an error processing your request: {str(e)}"
-        return error_query, error_output, error_response
+    except Exception as exc:
+        print(f"Error in generate_sql_and_response: {exc}")
+        return (
+            "SELECT COUNT(*) FROM Sales",
+            [],
+            f"Sorry, I encountered an error processing your request: {exc}",
+        )
 
-@app.route('/', methods=['GET', 'POST'])
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    if request.method == 'POST':
+    if request.method == "POST":
         try:
-            # Get user input
-            nlp_text = request.form.get('question', '').strip()
+            nlp_text = request.form.get("question", "").strip()
 
             if not nlp_text:
-                return render_template('index.html',
-                                     error="Please enter a question.")
+                return render_template("index.html", error="Please enter a question.")
 
-            # Generate SQL and natural language response
             query, output, response = generate_sql_and_response(nlp_text)
 
-            # Return the question, SQL query, and natural language response as strings
-            return render_template('index.html',
-                                 question=nlp_text,
-                                 query=query,
-                                 output=output,
-                                 response=response)
+            return render_template(
+                "index.html",
+                question=nlp_text,
+                query=query,
+                output=output,
+                response=response,
+            )
 
-        except Exception as e:
-            print(f"Error in index route: {str(e)}")
-            return render_template('index.html',
-                                 error=f"An error occurred: {str(e)}")
+        except Exception as exc:
+            print(f"Error in index route: {exc}")
+            return render_template("index.html", error=f"An error occurred: {exc}")
 
-    return render_template('index.html')
+    return render_template("index.html")
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
 
-</body>
-</html>
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
